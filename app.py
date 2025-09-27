@@ -1,5 +1,7 @@
 import os
 import requests
+import threading
+import time
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -15,6 +17,15 @@ def format_number(n):
     if isinstance(n, (int, float)):
         return f"{n:,}"
     return "N/A"
+
+def keep_alive():
+    """Send a request every 10 minutes to keep the service alive"""
+    while True:
+        try:
+            time.sleep(600)  # 10 minutes
+            requests.get("https://my-roblox-proxy.onrender.com/", timeout=30)
+        except:
+            pass
 
 @app.route('/webhook', methods=['POST'])
 def handle_webhook():
@@ -100,5 +111,8 @@ def handle_webhook():
         return jsonify({"error": "An internal server error occurred"}), 500
 
 if __name__ == '__main__':
+    # Start keep-alive thread
+    threading.Thread(target=keep_alive, daemon=True).start()
+    
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
