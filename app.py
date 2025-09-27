@@ -63,7 +63,7 @@ def handle_webhook():
                     "name": "Obsidian Project",
                     "icon_url": "https://static.wikia.nocookie.net/logopedia/images/a/aa/Synapse_X_%28Icon%29.svg/revision/latest/scale-to-width-down/250?cb=20221129133252"
                 },
-                "title": "Obsidian Serverside | Premium Logs",
+                "title": "Obsidian Serverside",
                 "color": 11290873, # Purple
                 "thumbnail": {
                     "url": thumbnail_url
