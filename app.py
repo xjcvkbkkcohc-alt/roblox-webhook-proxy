@@ -27,9 +27,8 @@ def keep_alive():
     while True:
         time.sleep(600)  # 10 минут
         try:
-            # Замени на URL твоего развернутого приложения в Render
-            render_app_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://localhost:5000')
-            if render_app_url.startswith('https://'):
+            render_app_url = os.environ.get('RENDER_EXTERNAL_URL')
+            if render_app_url:
                 logging.info("Keep-alive: отправляю пинг...")
                 requests.get(render_app_url, timeout=15)
         except requests.RequestException as e:
@@ -68,83 +67,74 @@ def handle_webhook():
             logging.error(f"Ошибка при запросе Universe ID: {e}")
             return jsonify({"error": "Failed to fetch Universe ID"}), 502
 
-        # --- Шаг 2: Получение всех деталей игры (параллельные запросы) ---
+        # --- Шаг 2: Получение всех деталей игры ---
         details, votes, thumbnail_url = {}, {}, None
         
-        # Запрос основной информации
         try:
             game_details_res = requests.get(GAMES_API.format(universe_id), timeout=10)
-            game_details_res.raise_for_status()
-            game_data = game_details_res.json().get('data')
-            if not game_data:
-                raise ValueError("API вернул пустой список данных для деталей игры")
-            details = game_data[0]
-            logging.info("Успешно получены детали игры.")
-        except (requests.RequestException, ValueError, IndexError) as e:
-            logging.error(f"Ошибка при запросе деталей игры: {e}")
-            return jsonify({"error": "Failed to fetch game details"}), 502
-
-        # Запрос голосов
-        try:
             game_votes_res = requests.get(VOTES_API.format(universe_id), timeout=10)
-            game_votes_res.raise_for_status()
-            votes_data = game_votes_res.json().get('data')
-            if not votes_data:
-                 raise ValueError("API вернул пустой список данных для голосов")
-            votes = votes_data[0]
-            logging.info("Успешно получены голоса (лайки/дизлайки).")
-        except (requests.RequestException, ValueError, IndexError) as e:
-            logging.error(f"Ошибка при запросе голосов: {e}")
-            # Не критичная ошибка, можно продолжить без этих данных
-            votes = {} # Устанавливаем пустой словарь, чтобы избежать ошибок ниже
-
-        # Запрос превью
-        try:
             thumbnail_res = requests.get(THUMBNAIL_API.format(universe_id), timeout=10)
+            
+            game_details_res.raise_for_status()
+            game_votes_res.raise_for_status()
             thumbnail_res.raise_for_status()
-            thumbnail_data = thumbnail_res.json().get('data')
-            if not thumbnail_data:
-                raise ValueError("API вернул пустой список данных для превью")
-            thumbnail_url = thumbnail_data[0]['imageUrl']
-            logging.info("Успешно получено превью игры.")
-        except (requests.RequestException, ValueError, IndexError) as e:
-            logging.error(f"Ошибка при запросе превью: {e}")
-            thumbnail_url = "https://www.roblox.com/images/Default-Profile.png" # Запасное изображение
+            
+            details = game_details_res.json()['data'][0]
+            votes = game_votes_res.json()['data'][0]
+            thumbnail_url = thumbnail_res.json()['data'][0]['imageUrl']
+            logging.info("Успешно получены все детали игры.")
+        except (requests.RequestException, IndexError, KeyError) as e:
+            logging.error(f"Ошибка при получении деталей игры: {e}")
+            return jsonify({"error": "Failed to fetch all game details"}), 502
 
-        # --- Шаг 3: Сборка эмбеда для Discord ---
+        # --- Шаг 3: Сборка эмбеда для Discord (ТВОЯ ВЕРСИЯ) ---
         logging.info("Начинаю сборку эмбеда...")
         game_name = details.get('name', 'N/A')
         price = details.get('price')
         price_str = "Free" if price is None or price == 0 else f"{price} Robux"
         js_code = f"```js\nRoblox.GameLauncher.joinGameInstance({place_id}, \"{job_id}\");\n```"
-
+        
+        # --- НАЧАЛО ТВОЕГО EMBED ---
         payload = {
             "embeds": [{
-                "author": { "name": "Obsidian Project", "icon_url": "https://i.imgur.com/example.png" }, # Заменил на рабочий URL
+                "author": {
+                    "name": "Obsidian Project",
+                    "icon_url": "https://static.wikia.nocookie.net/logopedia/images/a/aa/Synapse_X_%28Icon%29.svg/revision/latest/scale-to-width-down/250?cb=20221129133252"
+                },
                 "title": "Obsidian Serverside",
-                "color": 11290873,
-                "thumbnail": { "url": thumbnail_url },
+                "color": 11290873, # Purple
+                "thumbnail": {
+                    "url": thumbnail_url
+                },
                 "fields": [
                     {"name": "Game", "value": f"[{game_name}](https://www.roblox.com/games/{place_id})", "inline": True},
                     {"name": "Active Players", "value": format_number(details.get('playing')), "inline": True},
                     {"name": "Players In Server", "value": f"{player_count}/{max_players}", "inline": True},
                     {"name": "Game Visits", "value": format_number(details.get('visits')), "inline": True},
-                    {"name": "Creator", "value": details.get('creator', {}).get('name', 'N/A'), "inline": True},
+                    {"name": "Game Version", "value": str(details.get('placeVersion', 'N/A')), "inline": True},
+                    {"name": "Creator Name", "value": details.get('creator', {}).get('name', 'N/A'), "inline": True},
+                    {"name": "Creator ID", "value": str(details.get('creator', {}).get('id', 'N/A')), "inline": True},
+                    {"name": "Price", "value": price_str, "inline": True},
+                    {"name": "Universe ID", "value": str(universe_id), "inline": True},
                     {"name": "Favorites", "value": format_number(details.get('favoritedCount')), "inline": True},
                     {"name": "Likes", "value": format_number(votes.get('upVotes')), "inline": True},
                     {"name": "Dislikes", "value": format_number(votes.get('downVotes')), "inline": True},
-                    {"name": "Universe ID", "value": str(universe_id), "inline": True},
+                    {"name": "Genre", "value": details.get('genre', 'N/A'), "inline": True},
+                    {"name": "Voice Chat", "value": str(details.get('voiceEnabled', 'N/A')), "inline": True},
+                    {"name": "Created", "value": f"`{details.get('created', 'N/A')}`", "inline": True},
+                    {"name": "Updated", "value": f"`{details.get('updated', 'N/A')}`", "inline": True},
                     {"name": "JavaScript", "value": js_code, "inline": False},
                 ],
                 "footer": { "text": "Protected by Rewq" }
             }]
         }
+        # --- КОНЕЦ ТВОЕГО EMBED ---
         logging.info("Эмбед успешно собран.")
 
         # --- Шаг 4: Отправка в Discord ---
         try:
             response = requests.post(discord_webhook_url, json=payload, timeout=15)
-            response.raise_for_status() # Проверяем, что Discord принял вебхук (код 2xx)
+            response.raise_for_status() 
             logging.info(f"Вебхук успешно отправлен в Discord со статусом {response.status_code}.")
             return jsonify({"success": "Webhook sent!"}), 200
         except requests.RequestException as e:
@@ -152,13 +142,10 @@ def handle_webhook():
             return jsonify({"error": "Failed to send webhook to Discord"}), 502
 
     except Exception as e:
-        # Общий обработчик для непредвиденных ошибок
         logging.critical(f"Произошла непредвиденная ошибка в handle_webhook: {e}", exc_info=True)
         return jsonify({"error": "An internal server error occurred"}), 500
 
 if __name__ == '__main__':
-    # Запускаем поток для поддержания активности
     threading.Thread(target=keep_alive, daemon=True).start()
-    
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
