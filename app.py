@@ -42,16 +42,33 @@ def home():
 @app.route('/webhook', methods=['POST'])
 def handle_webhook():
     logging.info("Получен новый запрос на webhook...")
+    
+    # --- ИЗМЕНЕНИЕ 1: Получаем ВАШ настоящий URL из переменных окружения ---
+    # Это главная часть фикса. Теперь URL берется с сервера, а не из запроса.
+    # ВАМ НУЖНО ЗАЙТИ В НАСТРОЙКИ СЕРВИСА НА RENDER И ДОБАВИТЬ
+    # ПЕРЕМЕННУЮ ОКРУЖЕНИЯ (Environment Variable) с именем 'MY_DISCORD_WEBHOOK_URL'
+    # и значением 'https://discord.com/api/webhooks/...'
+    MY_SECURE_WEBHOOK_URL = os.environ.get('MY_DISCORD_WEBHOOK_URL')
+
+    if not MY_SECURE_WEBHOOK_URL:
+        logging.critical("КРИТИЧЕСКАЯ ОШИБКА: Переменная 'MY_DISCORD_WEBHOOK_URL' не установлена на сервере Render!")
+        return jsonify({"error": "Server configuration error"}), 500
+
     try:
         data = request.json
         place_id = data.get('placeId')
         job_id = data.get('jobId')
         player_count = data.get('playerCount')
         max_players = data.get('maxPlayers')
-        discord_webhook_url = data.get('discordWebhookUrl')
+        
+        # --- ИЗМЕНЕНИЕ 2: Мы больше НЕ читаем 'discordWebhookUrl' из запроса ---
+        # Эта строка удалена: discord_webhook_url = data.get('discordWebhookUrl')
+        # Приходящий URL теперь просто "пустышка", как вы и хотели.
 
-        if not all([place_id, job_id, discord_webhook_url]):
-            logging.error(f"Ошибка валидации: отсутствуют обязательные данные. Получено: {data}")
+        # --- ИЗМЕНЕНИЕ 3: Обновлена валидация ---
+        # Мы больше не проверяем 'discordWebhookUrl', так как он нам не нужен.
+        if not all([place_id, job_id]):
+            logging.error(f"Ошибка валидации: отсутствуют place_id или job_id. Получено: {data}")
             return jsonify({"error": "Missing required data"}), 400
 
         # --- Шаг 1: Получение Universe ID ---
@@ -67,7 +84,7 @@ def handle_webhook():
             logging.error(f"Ошибка при запросе Universe ID: {e}")
             return jsonify({"error": "Failed to fetch Universe ID"}), 502
 
-        # --- Шаг 2: Получение всех деталей игры ---
+        # --- Шаг 2: Получение всех деталей игры (Логика не изменена) ---
         details, votes, thumbnail_url = {}, {}, None
         
         try:
@@ -87,14 +104,13 @@ def handle_webhook():
             logging.error(f"Ошибка при получении деталей игры: {e}")
             return jsonify({"error": "Failed to fetch all game details"}), 502
 
-        # --- Шаг 3: Сборка эмбеда для Discord (ТВОЯ ВЕРСИЯ) ---
+        # --- Шаг 3: Сборка эмбеда для Discord (Логика не изменена) ---
         logging.info("Начинаю сборку эмбеда...")
         game_name = details.get('name', 'N/A')
         price = details.get('price')
         price_str = "Free" if price is None or price == 0 else f"{price} Robux"
         js_code = f"```js\nRoblox.GameLauncher.joinGameInstance({place_id}, \"{job_id}\");\n```"
         
-        # --- НАЧАЛО ТВОЕГО EMBED ---
         payload = {
             "embeds": [{
                 "author": {
@@ -128,12 +144,12 @@ def handle_webhook():
                 "footer": { "text": "Protected by Rewq" }
             }]
         }
-        # --- КОНЕЦ ТВОЕГО EMBED ---
         logging.info("Эмбед успешно собран.")
 
         # --- Шаг 4: Отправка в Discord ---
+        # --- ИЗМЕНЕНИЕ 4: Отправляем на ВАШ безопасный URL ---
         try:
-            response = requests.post(discord_webhook_url, json=payload, timeout=15)
+            response = requests.post(MY_SECURE_WEBHOOK_URL, json=payload, timeout=15)
             response.raise_for_status() 
             logging.info(f"Вебхук успешно отправлен в Discord со статусом {response.status_code}.")
             return jsonify({"success": "Webhook sent!"}), 200
