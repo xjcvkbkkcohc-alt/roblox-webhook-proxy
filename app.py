@@ -3,165 +3,165 @@ import requests
 import threading
 import time
 import logging
+import sys 
 from flask import Flask, request, jsonify
 
-# Настройка логирования для вывода в консоль Render
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# --- Настройка логов ---
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    stream=sys.stdout # Гарантирует вывод в консоль Render
+)
+
+# =================================================================
+# !! ВАЖНО !!
+# ВСТАВЬ СЮДА СВОЮ РЕАЛЬНУЮ ССЫЛКУ НА ВЕБХУК
+#
+WEBHOOK_URL = "https://discord.com/api/webhooks/1429005345841483776/rxdR0M7CPVXjSE1H4Zw8KvuJ9BIoL85vRRr0bwRVkJ5AL96li0ku2q21xwZOTEXmksju"
+#
+# =================================================================
 
 app = Flask(__name__)
 
-# URL-адреса API Roblox
-UNIVERSE_API = "https://apis.roblox.com/universes/v1/places/{}/universe"
-GAMES_API = "https://games.roblox.com/v1/games?universeIds={}"
-VOTES_API = "https://games.roblox.com/v1/games/votes?universeIds={}"
-THUMBNAIL_API = "https://thumbnails.roblox.com/v1/games/icons?universeIds={}&size=256x256&format=Png&isCircular=false"
+# --- Глобальные переменные ---
+server_data = {}
+data_lock = threading.Lock() 
+AGGREGATE_INTERVAL = 300  # 5 минут (300 секунд)
+STALE_THRESHOLD = 600   # 10 минут (600 секунд)
 
-def format_number(n):
-    """Форматирует число, добавляя запятые в качестве разделителей."""
-    if isinstance(n, (int, float)):
-        return f"{n:,}"
-    return "N/A"
 
-def keep_alive():
-    """Отправляет запрос каждые 10 минут, чтобы сервис не "засыпал" на Render."""
+def aggregate_and_post_stats():
+    """
+    Каждые 5 минут собирает статистику и отправляет в Discord.
+    """
+    
+    # Проверка, что ты вставил свою ссылку
+    if "https://discord.com/api/webhooks/1429005345841483776/rxdR0M7CPVXjSE1H4Zw8KvuJ9BIoL85vRRr0bwRVkJ5AL96li0ku2q21xwZOTEXmksju" in WEBHOOK_URL:
+        logging.critical("="*50)
+        logging.critical("ОШИБКА: ТЫ НЕ ВСТАВИЛ ССЫЛКУ НА ВЕБХУК В app.py!")
+        logging.critical("Останови сервер, вставь ссылку в WEBHOOK_URL и запусти заново.")
+        logging.critical("="*50)
+        print("ОШИБКА: ТЫ НЕ ВСТАВИЛ ССЫЛКУ НА ВЕБХУК В app.py!")
+        return # Остановить этот поток
+        
+    logging.info(f"Агрегатор: Поток запущен. URL жестко закодирован. Первая проверка через 5 минут.")
+    print(f"Агрегатор: Поток запущен. URL жестко закодирован. Первая проверка через 5 минут.")
+    
+    # Сначала ждем 5 минут, чтобы собрать первую пачку данных
+    time.sleep(AGGREGATE_INTERVAL) 
+
     while True:
-        time.sleep(600)  # 10 минут
+        logging.info("Агрегатор: Начинаю подсчет статистики...")
+        print("Агрегатор: Начинаю подсчет статистики...")
+        
+        total_players = 0
+        total_games = 0
+        highest_player_count = 0
+        active_servers_count = 0
+        
+        universes_to_remove = []
+        current_time = time.time()
+
         try:
-            render_app_url = os.environ.get('RENDER_EXTERNAL_URL')
-            if render_app_url:
-                logging.info("Keep-alive: отправляю пинг...")
-                requests.get(render_app_url, timeout=15)
-        except requests.RequestException as e:
-            logging.error(f"Keep-alive: не удалось отправить пинг: {e}")
+            with data_lock:
+                total_games = len(server_data)
+                
+                for universe_id, jobs in server_data.items():
+                    jobs_to_remove = []
+                    for job_id, data in jobs.items():
+                        if (current_time - data['timestamp']) > STALE_THRESHOLD:
+                            jobs_to_remove.append(job_id)
+                        else:
+                            player_count = data.get('count', 0)
+                            total_players += player_count
+                            active_servers_count += 1
+                            if player_count > highest_player_count:
+                                highest_player_count = player_count
+                    
+                    for job_id in jobs_to_remove:
+                        del server_data[universe_id][job_id]
+                
+                    if not server_data[universe_id]:
+                        universes_to_remove.append(universe_id)
+
+                for universe_id in universes_to_remove:
+                    del server_data[universe_id]
+
+            # --- Отправка статистики в Discord ---
+            # Отправляем, только если есть хотя бы один сервер
+            if active_servers_count > 0:
+                logging.info(f"Агрегатор: Отправка: Игр={total_games}, Игроков={total_players}, Макс.={highest_player_count}")
+                print(f"Агрегатор: Отправка: Игр={total_games}, Игроков={total_players}, Макс.={highest_player_count}")
+
+                payload = {
+                    "embeds": [{
+                        "title": "📊 Game Statistics",
+                        "color": 11290873, 
+                        "fields": [
+                            {"name": "Total Games", "value": f"**{total_games}**", "inline": True},
+                            {"name": "Total Players", "value": f"**{total_players}**", "inline": True},
+                            {"name": "Highest Player Count", "value": f"**{highest_player_count}**", "inline": True}
+                        ],
+                        "footer": { "text": "Obsidian Serverside" },
+                        "timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                    }]
+                }
+                # Отправляем вебхук
+                requests.post(WEBHOOK_URL, json=payload, timeout=10)
+            
+            else:
+                logging.info("Агрегатор: Нет активных серверов, отправка пропущена.")
+                print("Агрегатор: Нет активных серверов, отправка пропущена.")
+
+        except Exception as e:
+            logging.error(f"Агрегатор: Ошибка в главном цикле: {e}", exc_info=True)
+            print(f"Агрегатор: Ошибка в главном цикле: {e}")
+
+        # Сервер засыпает на 5 минут (300 секунд)
+        logging.info(f"Агрегатор: Засыпаю на {AGGREGATE_INTERVAL} секунд...")
+        print(f"Агрегатор: Засыпаю на {AGGREGATE_INTERVAL} секунд...")
+        time.sleep(AGGREGATE_INTERVAL) 
+
 
 @app.route('/')
 def home():
-    """Простой маршрут для проверки работы и для keep_alive."""
-    return "Сервер работает!", 200
+    """Маршрут для проверки, что сервер жив."""
+    return "Obsidian Aggregator Service is running!", 200
 
-@app.route('/webhook', methods=['POST'])
-def handle_webhook():
-    logging.info("Получен новый запрос на webhook...")
-    
-    # --- ИЗМЕНЕНИЕ 1: Получаем ВАШ настоящий URL из переменных окружения ---
-    # Это главная часть фикса. Теперь URL берется с сервера, а не из запроса.
-    # ВАМ НУЖНО ЗАЙТИ В НАСТРОЙКИ СЕРВИСА НА RENDER И ДОБАВИТЬ
-    # ПЕРЕМЕННУЮ ОКРУЖЕНИЯ (Environment Variable) с именем 'MY_DISCORD_WEBHOOK_URL'
-    # и значением 'https://discord.com/api/webhooks/...'
-    MY_SECURE_WEBHOOK_URL = os.environ.get('MY_DISCORD_WEBHOOK_URL')
-
-    if not MY_SECURE_WEBHOOK_URL:
-        logging.critical("КРИТИЧЕСКАЯ ОШИБКА: Переменная 'MY_DISCORD_WEBHOOK_URL' не установлена на сервере Render!")
-        return jsonify({"error": "Server configuration error"}), 500
-
+@app.route('/heartbeat', methods=['POST'])
+def handle_heartbeat():
+    """
+    Принимает "пульс" от игровых серверов Roblox.
+    """
     try:
         data = request.json
-        place_id = data.get('placeId')
+        universe_id = data.get('universeId')
         job_id = data.get('jobId')
         player_count = data.get('playerCount')
-        max_players = data.get('maxPlayers')
+
+        if not all([universe_id, job_id, player_count is not None]):
+            return jsonify({"error": "Missing data"}), 400
+
+        current_time = time.time()
+
+        with data_lock:
+            if universe_id not in server_data:
+                server_data[universe_id] = {}
+            server_data[universe_id][job_id] = {
+                "count": int(player_count),
+                "timestamp": current_time
+            }
         
-        # --- ИЗМЕНЕНИЕ 2: Мы больше НЕ читаем 'discordWebhookUrl' из запроса ---
-        # Эта строка удалена: discord_webhook_url = data.get('discordWebhookUrl')
-        # Приходящий URL теперь просто "пустышка", как вы и хотели.
-
-        # --- ИЗМЕНЕНИЕ 3: Обновлена валидация ---
-        # Мы больше не проверяем 'discordWebhookUrl', так как он нам не нужен.
-        if not all([place_id, job_id]):
-            logging.error(f"Ошибка валидации: отсутствуют place_id или job_id. Получено: {data}")
-            return jsonify({"error": "Missing required data"}), 400
-
-        # --- Шаг 1: Получение Universe ID ---
-        try:
-            universe_id_res = requests.get(UNIVERSE_API.format(place_id), timeout=10)
-            universe_id_res.raise_for_status()
-            universe_id = universe_id_res.json().get('universeId')
-            if not universe_id:
-                logging.error(f"Не удалось найти Universe ID для Place ID: {place_id}")
-                return jsonify({"error": "Could not find Universe ID"}), 404
-            logging.info(f"Успешно получен Universe ID: {universe_id}")
-        except requests.RequestException as e:
-            logging.error(f"Ошибка при запросе Universe ID: {e}")
-            return jsonify({"error": "Failed to fetch Universe ID"}), 502
-
-        # --- Шаг 2: Получение всех деталей игры (Логика не изменена) ---
-        details, votes, thumbnail_url = {}, {}, None
-        
-        try:
-            game_details_res = requests.get(GAMES_API.format(universe_id), timeout=10)
-            game_votes_res = requests.get(VOTES_API.format(universe_id), timeout=10)
-            thumbnail_res = requests.get(THUMBNAIL_API.format(universe_id), timeout=10)
-            
-            game_details_res.raise_for_status()
-            game_votes_res.raise_for_status()
-            thumbnail_res.raise_for_status()
-            
-            details = game_details_res.json()['data'][0]
-            votes = game_votes_res.json()['data'][0]
-            thumbnail_url = thumbnail_res.json()['data'][0]['imageUrl']
-            logging.info("Успешно получены все детали игры.")
-        except (requests.RequestException, IndexError, KeyError) as e:
-            logging.error(f"Ошибка при получении деталей игры: {e}")
-            return jsonify({"error": "Failed to fetch all game details"}), 502
-
-        # --- Шаг 3: Сборка эмбеда для Discord (Логика не изменена) ---
-        logging.info("Начинаю сборку эмбеда...")
-        game_name = details.get('name', 'N/A')
-        price = details.get('price')
-        price_str = "Free" if price is None or price == 0 else f"{price} Robux"
-        js_code = f"```js\nRoblox.GameLauncher.joinGameInstance({place_id}, \"{job_id}\");\n```"
-        
-        payload = {
-            "embeds": [{
-                "author": {
-                    "name": "Obsidian Project",
-                    "icon_url": "https://static.wikia.nocookie.net/logopedia/images/a/aa/Synapse_X_%28Icon%29.svg/revision/latest/scale-to-width-down/250?cb=20221129133252"
-                },
-                "title": "Obsidian Serverside",
-                "color": 11290873, # Purple
-                "thumbnail": {
-                    "url": thumbnail_url
-                },
-                "fields": [
-                    {"name": "Game", "value": f"[{game_name}](https://www.roblox.com/games/{place_id})", "inline": True},
-                    {"name": "Active Players", "value": format_number(details.get('playing')), "inline": True},
-                    {"name": "Players In Server", "value": f"{player_count}/{max_players}", "inline": True},
-                    {"name": "Game Visits", "value": format_number(details.get('visits')), "inline": True},
-                    {"name": "Game Version", "value": str(details.get('placeVersion', 'N/A')), "inline": True},
-                    {"name": "Creator Name", "value": details.get('creator', {}).get('name', 'N/A'), "inline": True},
-                    {"name": "Creator ID", "value": str(details.get('creator', {}).get('id', 'N/A')), "inline": True},
-                    {"name": "Price", "value": price_str, "inline": True},
-                    {"name": "Universe ID", "value": str(universe_id), "inline": True},
-                    {"name": "Favorites", "value": format_number(details.get('favoritedCount')), "inline": True},
-                    {"name": "Likes", "value": format_number(votes.get('upVotes')), "inline": True},
-                    {"name": "Dislikes", "value": format_number(votes.get('downVotes')), "inline": True},
-                    {"name": "Genre", "value": details.get('genre', 'N/A'), "inline": True},
-                    {"name": "Voice Chat", "value": str(details.get('voiceEnabled', 'N/A')), "inline": True},
-                    {"name": "Created", "value": f"`{details.get('created', 'N/A')}`", "inline": True},
-                    {"name": "Updated", "value": f"`{details.get('updated', 'N/A')}`", "inline": True},
-                    {"name": "JavaScript", "value": js_code, "inline": False},
-                ],
-                "footer": { "text": "Protected by Rewq" }
-            }]
-        }
-        logging.info("Эмбед успешно собран.")
-
-        # --- Шаг 4: Отправка в Discord ---
-        # --- ИЗМЕНЕНИЕ 4: Отправляем на ВАШ безопасный URL ---
-        try:
-            response = requests.post(MY_SECURE_WEBHOOK_URL, json=payload, timeout=15)
-            response.raise_for_status() 
-            logging.info(f"Вебхук успешно отправлен в Discord со статусом {response.status_code}.")
-            return jsonify({"success": "Webhook sent!"}), 200
-        except requests.RequestException as e:
-            logging.error(f"Ошибка при отправке вебхука в Discord: {e}")
-            return jsonify({"error": "Failed to send webhook to Discord"}), 502
+        return jsonify({"status": "ok"}), 200
 
     except Exception as e:
-        logging.critical(f"Произошла непредвиденная ошибка в handle_webhook: {e}", exc_info=True)
-        return jsonify({"error": "An internal server error occurred"}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
+# --- Запуск сервера ---
 if __name__ == '__main__':
-    threading.Thread(target=keep_alive, daemon=True).start()
-    port = int(os.environ.get('PORT', 5000))
+    # Запускаем поток сбора статистики
+    threading.Thread(target=aggregate_and_post_stats, daemon=True).start()
+    
+    # Эта переменная окружения (PORT) нужна самому Render, ее убирать нельзя
+    port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
