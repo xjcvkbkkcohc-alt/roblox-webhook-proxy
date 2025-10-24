@@ -14,9 +14,9 @@ app = Flask(__name__)
 UNIVERSE_API = "https://apis.roblox.com/universes/v1/places/{}/universe"
 GAMES_API = "https://games.roblox.com/v1/games?universeIds={}"
 VOTES_API = "https://games.roblox.com/v1/games/votes?universeIds={}"
-THUMBIL_API = "https://thumbnails.roblox.com/v1/games/icons?universeIds={}&size=256x256&format=Png&isCircular=false"
+THUMBNAIL_API = "https://thumbnails.roblox.com/v1/games/icons?universeIds={}&size=256x256&format=Png&isCircular=false"
 
-# --- ИЗМЕНЕНО: Читаем URL для новых игр из переменных окружения ---
+# Читаем URL для новых игр из переменных окружения
 NEW_GAME_WEBHOOK_URL = os.environ.get('NEW_GAME_WEBHOOK_URL')
 
 # Хранилище (в памяти) для ID игр, которые мы уже видели
@@ -40,23 +40,43 @@ def keep_alive():
         except requests.RequestException as e:
             logging.error(f"Keep-alive: не удалось отправить пинг: {e}")
 
-def send_new_game_notification(game_name, place_id):
-    """Отправляет простое уведомление о новой игре в отдельный вебхук."""
+# --- ИЗМЕНЕНО: Функция для отправки уведомления о новой игре с embed'ом ---
+def send_new_game_notification(game_name, place_id, visits, thumbnail_url):
+    """Отправляет красивое уведомление о новой игре в отдельный вебхук."""
     
-    # --- ИЗМЕНЕНО: Проверяем, существует ли URL ---
     if not NEW_GAME_WEBHOOK_URL:
         logging.error("Переменная 'NEW_GAME_WEBHOOK_URL' не установлена! Уведомление о новой игре не будет отправлено.")
-        return # Тихо выходим, чтобы не сломать основной запрос
+        return
 
     try:
-        content = f"New game! {game_name}: <https://www.roblox.com/games/{place_id}>"
-        payload = {"content": content}
+        # Формируем embed
+        payload = {
+            "embeds": [{
+                "author": {
+                    "name": "Obsidian Project",
+                    "icon_url": "https://static.wikia.nocookie.net/logopedia/images/a/aa/Synapse_X_%28Icon%29.svg/revision/latest/scale-to-width-down/250?cb=20221129133252"
+                },
+                "title": f"New Game Detected: {game_name}", # Заголовок с названием игры
+                "url": f"https://www.roblox.com/games/{place_id}", # Ссылка на игру
+                "color": 3066993, # Ярко-зеленый цвет для новых игр
+                "thumbnail": {
+                    "url": thumbnail_url # Миниатюра игры
+                },
+                "fields": [
+                    {"name": "Game Name", "value": f"[{game_name}](https://www.roblox.com/games/{place_id})", "inline": False},
+                    {"name": "Game Visits", "value": format_number(visits), "inline": True},
+                    {"name": "Place ID", "value": str(place_id), "inline": True}
+                ],
+                "footer": { "text": "Obsidian Serverside" }
+            }]
+        }
         
         response = requests.post(NEW_GAME_WEBHOOK_URL, json=payload, timeout=10)
         response.raise_for_status()
-        logging.info(f"Успешно отправлено уведомление о новой игре: {game_name}")
+        logging.info(f"Успешно отправлено красивое уведомление о новой игре: {game_name}")
     except requests.RequestException as e:
-        logging.error(f"Не удалось отправить уведомление о новой игре: {e}")
+        logging.error(f"Не удалось отправить красивое уведомление о новой игре: {e}")
+# --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
 @app.route('/')
 def home():
@@ -94,11 +114,7 @@ def handle_webhook():
                 return jsonify({"error": "Could not find Universe ID"}), 404
             logging.info(f"Успешно получен Universe ID: {universe_id}")
             
-            is_new_game = False
-            if universe_id not in seen_universe_ids:
-                seen_universe_ids.add(universe_id)
-                is_new_game = True
-                logging.info(f"Обнаружена новая игра! Universe ID: {universe_id}")
+            # Мы узнаем, новая ли это игра, позже, после получения game_name
             
         except requests.RequestException as e:
             logging.error(f"Ошибка при запросе Universe ID: {e}")
@@ -110,7 +126,7 @@ def handle_webhook():
         try:
             game_details_res = requests.get(GAMES_API.format(universe_id), timeout=10)
             game_votes_res = requests.get(VOTES_API.format(universe_id), timeout=10)
-            thumbnail_res = requests.get(THUMBIL_API.format(universe_id), timeout=10)
+            thumbnail_res = requests.get(THUMBNAIL_API.format(universe_id), timeout=10)
             
             game_details_res.raise_for_status()
             game_votes_res.raise_for_status()
@@ -124,9 +140,19 @@ def handle_webhook():
             logging.error(f"Ошибка при получении деталей игры: {e}")
             return jsonify({"error": "Failed to fetch all game details"}), 502
 
-        # --- Шаг 3: Сборка эмбеда для Discord ---
-        logging.info("Начинаю сборку эмбеда...")
+        # --- Шаг 2.5 (Новое): Проверка на новую игру после получения game_name и visits ---
+        is_new_game = False
         game_name = details.get('name', 'N/A')
+        visits = details.get('visits', 0)
+        
+        if universe_id not in seen_universe_ids:
+            seen_universe_ids.add(universe_id)
+            is_new_game = True
+            logging.info(f"Обнаружена новая игра! Universe ID: {universe_id}, Name: {game_name}")
+        # --- КОНЕЦ НОВОГО ---
+
+        # --- Шаг 3: Сборка эмбеда для Discord ---
+        logging.info("Начинаю сборку основного эмбеда...")
         price = details.get('price')
         price_str = "Free" if price is None or price == 0 else f"{price} Robux"
         js_code = f"```js\nRoblox.GameLauncher.joinGameInstance({place_id}, \"{job_id}\");\n```"
@@ -146,7 +172,7 @@ def handle_webhook():
                     {"name": "Game", "value": f"[{game_name}](https://www.roblox.com/games/{place_id})", "inline": True},
                     {"name": "Active Players", "value": format_number(details.get('playing')), "inline": True},
                     {"name": "Players In Server", "value": f"{player_count}/{max_players}", "inline": True},
-                    {"name": "Game Visits", "value": format_number(details.get('visits')), "inline": True},
+                    {"name": "Game Visits", "value": format_number(visits), "inline": True}, # Используем visits
                     {"name": "Game Version", "value": str(details.get('placeVersion', 'N/A')), "inline": True},
                     {"name": "Creator Name", "value": details.get('creator', {}).get('name', 'N/A'), "inline": True},
                     {"name": "Creator ID", "value": str(details.get('creator', {}).get('id', 'N/A')), "inline": True},
@@ -164,7 +190,7 @@ def handle_webhook():
                 "footer": { "text": "Protected by Rewq" }
             }]
         }
-        logging.info("Эмбед успешно собран.")
+        logging.info("Основной эмбед успешно собран.")
 
         # --- Шаг 4: Отправка в Discord ---
         try:
@@ -172,8 +198,10 @@ def handle_webhook():
             response.raise_for_status()  
             logging.info(f"Вебхук успешно отправлен в Discord со статусом {response.status_code}.")
             
+            # --- ИЗМЕНЕНО: Передаем больше данных в send_new_game_notification ---
             if is_new_game:
-                threading.Thread(target=send_new_game_notification, args=(game_name, place_id), daemon=True).start()
+                threading.Thread(target=send_new_game_notification, args=(game_name, place_id, visits, thumbnail_url), daemon=True).start()
+            # --- КОНЕЦ ИЗМЕНЕНИЙ ---
             
             return jsonify({"success": "Webhook sent!"}), 200
         except requests.RequestException as e:
